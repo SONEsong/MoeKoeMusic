@@ -6,11 +6,8 @@ import Store from 'electron-store';
 import { fileURLToPath } from 'url';
 import isDev from 'electron-is-dev';
 import fs from 'fs';
-import kill from 'tree-kill';
 import { exec } from 'child_process';
-
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
 const store = new Store();
 let mainWindow = null;
 let apiProcess = null;
@@ -71,6 +68,7 @@ export function createWindow() {
         if (!store.get('disclaimerAccepted')) {
             mainWindow.webContents.send('show-disclaimer');
         }
+        mainWindow.webContents.send('version', app.getVersion());
     });
 
     mainWindow.on('close', (event) => {
@@ -187,9 +185,16 @@ export function createTray(mainWindow) {
     ]);
 
     tray.setToolTip('MoeKoe Music');
-    tray.on('right-click', () => {
-        tray.popUpContextMenu(contextMenu);
-    });
+
+    switch (process.platform) {
+        case 'linux':
+            tray.setContextMenu(contextMenu);
+            break;
+        default:
+            tray.on('right-click', () => {
+                tray.popUpContextMenu(contextMenu);
+            });
+    }
     tray.on('click', () => {
         mainWindow.isVisible() ? mainWindow.hide() : mainWindow.show();
     });
@@ -261,7 +266,7 @@ export function startApiServer() {
 // 停止 API 服务器
 export function stopApiServer() {
     if (apiProcess) {
-        kill(apiProcess.pid);
+        process.kill(apiProcess.pid, 'SIGKILL');
         apiProcess = null;
     }
 }

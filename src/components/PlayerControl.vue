@@ -32,7 +32,8 @@
                 </button>
             </div>
             <div class="extra-controls">
-                <button class="extra-btn" @click="toggleFavorite"><i class="fas fa-heart"></i></button>
+                <button class="extra-btn" title="我喜欢" @click="toLike"><i class="fas fa-heart"></i></button>
+                <button class="extra-btn" title="收藏至" @click="toggleFavorite"><i class="fas fa-add"></i></button>
                 <button class="extra-btn" @click="togglePlaybackMode">
                     <i v-if="currentPlaybackModeIndex != '2'" :class="currentPlaybackMode.icon"
                         :title="currentPlaybackMode.title"></i>
@@ -131,7 +132,7 @@
                     </div>
 
                     <div class="player-controls">
-                        <button class="control-btn like-btn" @click="toggleFavorite">
+                        <button class="control-btn like-btn" title="我喜欢" @click="toLike">
                             <i class="fas fa-heart"></i>
                         </button>
                         <button class="control-btn" @click="playSongFromQueue('previous')">
@@ -189,7 +190,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed, onUnmounted, nextTick } from 'vue';
+import { ref, onMounted, computed, onUnmounted, onBeforeUnmount, nextTick } from 'vue';
 import { RecycleScroller } from 'vue3-virtual-scroller';
 import 'vue3-virtual-scroller/dist/vue3-virtual-scroller.css';
 import { get } from '../utils/request';
@@ -232,6 +233,7 @@ const NextSong = ref([]);
 const playlists = ref([]);
 const isPlaylistSelectOpen = ref(false);
 const lyricsFontSize = ref('24px');
+const isInputFocused = ref(false);
 
 // 切换随机/顺序/单曲播放
 const togglePlaybackMode = () => {
@@ -239,12 +241,26 @@ const togglePlaybackMode = () => {
     audio.loop = currentPlaybackModeIndex.value == 2;
     localStorage.setItem('player_playback_mode', currentPlaybackModeIndex.value);
 };
+const validateUserAndSong = () => {
+    if (!MoeAuth.isAuthenticated) {
+        window.$modal.alert(t('qing-xian-deng-lu')); 
+        return false;
+    }
+    if (!currentSong.value.hash) {
+        window.$modal.alert(t('mei-you-zheng-zai-bo-fang-de-ge-qu')); 
+        return false;
+    }
+    return true;
+}
+const toLike = ()=>{
+    if (!validateUserAndSong()) return;
+    const like_id = localStorage.getItem('like');
+    if(!like_id) {window.$modal.alert('先去看看你的收藏夹吧');return;}
+    addToPlaylist(like_id, currentSong.value);
+}
 
 const toggleFavorite = async () => {
-    if (!currentSong.value.hash) {
-        window.$modal.alert(t('mei-you-zheng-zai-bo-fang-de-ge-qu'));
-        return;
-    }
+    if (!validateUserAndSong()) return;
     try {
         const playlistResponse = await get('/user/playlist',{
             pagesize:100
@@ -300,6 +316,10 @@ onMounted(() => {
         progressWidth.value = (audio.currentTime / currentSong.value.timeLength) * 100;
     }
     initMediaSession();
+    getVip();
+    document.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('focus', checkFocus, true);
+    document.addEventListener('blur', checkFocus, true);
 });
 const formattedCurrentTime = computed(() => formatTime(currentTime.value));
 const formattedDuration = computed(() => formatTime(currentSong.value?.timeLength || 0));
@@ -347,13 +367,7 @@ const playSong = async (song) => {
 
         localStorage.setItem('current_song', JSON.stringify(currentSong.value));
         getLyrics(currentSong.value.hash);
-        if (MoeAuth.isAuthenticated && canRequestVip()) {
-            try {
-                await get('/youth/vip');
-            } catch (error) {
-                console.error('领取VIP失败:', error);
-            }
-        }
+        getVip();
         getMusicHighlights(currentSong.value.hash);
     } catch (error) {
         console.error('播放音乐时发生错误:', error);
@@ -542,7 +556,7 @@ const addPlaylistToQueue = async (info) => {
 };
 
 // 添加歌曲到队列并播放的方法
-const addSongToQueue = async (hash, name, img, author, isReset = true, high = true) => {
+const addSongToQueue = async (hash, name, img, author, isReset = true) => {
     const currentSongHash = currentSong.value.hash;
     try {
         clearTimeout(timeoutId.value);
@@ -556,16 +570,11 @@ const addSongToQueue = async (hash, name, img, author, isReset = true, high = tr
         }
         if(!MoeAuth.isAuthenticated) data.free_part = 1;
         if(MoeAuth.isAuthenticated && settings?.quality === 'lossless') data.quality = 'flac';
-        if(MoeAuth.isAuthenticated && settings?.quality === 'hires' && high) data.quality = 'high';
-        if(MoeAuth.isAuthenticated && settings?.quality === 'clear' && high) data.quality = 'viper_clear';
+        if(MoeAuth.isAuthenticated && settings?.quality === 'hires') data.quality = 'high';
 
         const response = await get('/song/url',data);
         if (response.status !== 1) {
             currentSong.value.author = currentSong.value.name = t('huo-qu-yin-le-shi-bai');
-            if(response.status == 2){
-                addSongToQueue(hash, name, img, author, true, false);
-                return;
-            }
             if (response.status == 3) {
                 currentSong.value.name = t('gai-ge-qu-zan-wu-ban-quan')
             }
@@ -578,7 +587,7 @@ const addSongToQueue = async (hash, name, img, author, isReset = true, high = tr
         }
 
         if (response.extName == 'mp4') {
-            currentSong.value.author = currentSong.value.name = t('huo-qu-yin-le-shi-bai');
+            addSongToQueue(hash, name, img, author, false);
             return;
         }
         
@@ -817,6 +826,11 @@ onUnmounted(() => {
         window.electron.ipcRenderer.removeAllListeners('toggle-play-pause');
         window.electron.ipcRenderer.removeAllListeners('toggle-mute');
     }
+    document.removeEventListener('keydown', handleKeyDown);
+});
+onBeforeUnmount(() => {
+    document.removeEventListener('focus', checkFocus, true);
+    document.removeEventListener('blur', checkFocus, true);
 });
 const isElectron = () => {
     return typeof window !== 'undefined' && typeof window.electron !== 'undefined';
@@ -833,18 +847,23 @@ const handleVolumeScroll = (event) => {
     volume.value = Math.min(Math.max(volume.value + delta * 10, 0), 100);
     changeVolume();
 };
-const canRequestVip = () => {
+const getVip = async() => {
+    if(!MoeAuth.isAuthenticated) return;
     const lastRequestTime = localStorage.getItem('lastVipRequestTime');
     if (lastRequestTime) {
         const now = new Date().getTime();
         const elapsedTime = now - parseInt(lastRequestTime);
         const threeHours = 3 * 60 * 60 * 1000;
         if (elapsedTime < threeHours) {
-            return false;
+            return;
         }
     }
+    try {
+        await get('/youth/vip');
+    } catch (error) {
+        console.error('领取VIP失败:', error);
+    }
     localStorage.setItem('lastVipRequestTime', new Date().getTime().toString());
-    return true;
 }
 
 const handleShortcut = (event) => {
@@ -1050,6 +1069,26 @@ const changeMediaSession = (song) => {
         }
     };
     updateMediaSession();
+};
+
+const checkFocus = () => {
+    isInputFocused.value = ['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName);
+};
+// 处理键盘按下事件
+const handleKeyDown = (event) => {
+    if(isInputFocused.value) return;
+    switch (event.code) {
+        case 'Space':
+            event.preventDefault();
+            togglePlayPause();
+            break;
+        case 'ArrowLeft':
+            playSongFromQueue('previous');
+            break;
+        case 'ArrowRight':
+            playSongFromQueue('next');
+            break;
+    }
 };
 </script>
 
